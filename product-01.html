@@ -81,4 +81,52 @@ if(!reduce&&particles){for(let i=0;i<(innerWidth<700?12:20);i++){const p=documen
 <script>
 (()=>{const data={daily:['Daily Tracker','Record each habit day by day and keep a clear monthly view of what happened.',['Done / Wrong / Clear states','Add and manage habits','Monthly calendar view','Responsive experience']],analytics:['Analytics','Review consistency and habit performance through visual analytics.',['Performance overview','Progress patterns','Clearer monthly review','Built into the same workspace']],streaks:['Streak Center','Keep your active and completed streaks visible so consistency is easier to follow.',['Current streaks','Milestone visibility','Progress motivation','Quick review']],score:['Heatmap + CLAD Score','Use a visual monthly heatmap and CLAD Score to understand your consistency.',['Monthly heatmap','CLAD Score','Trend context','Progress at a glance']]};const content=document.getElementById('v6Content');document.querySelectorAll('.v6-tab').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.v6-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');const d=data[btn.dataset.v6];content.innerHTML='<h3>'+d[0]+'</h3><p>'+d[1]+'</p><div class="v6-bullets">'+d[2].map(x=>'<div class="v6-bullet">✓ '+x+'</div>').join('')+'</div>'}));})();
 </script>
-</body></html>
+</body><script>
+(() => {
+
+  const PROMO_CODE = 'CLAD30';
+  const PROMO_URL = 'https://rzp.io/rzp/XjgidtNH';
+
+  const input = document.getElementById('promoCode');
+  const button = document.getElementById('promoBtn');
+  const status = document.getElementById('promoStatus');
+  const unlocked = document.getElementById('promoUnlocked');
+  const checkout = document.getElementById('promoCheckout');
+
+  function unlockPromo() {
+
+    const code = (input.value || '').trim().toUpperCase();
+
+    if (code === PROMO_CODE) {
+
+      unlocked.classList.add('show');
+
+      status.textContent =
+        'Valid promo code — the ₹30 checkout is unlocked.';
+
+      status.className = 'promoStatus ok';
+
+      checkout.href = PROMO_URL;
+
+    } else {
+
+      unlocked.classList.remove('show');
+
+      status.textContent =
+        'That promo code is not valid.';
+
+      status.className = 'promoStatus bad';
+
+    }
+  }
+
+  button.addEventListener('click', unlockPromo);
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      unlockPromo();
+    }
+  });
+
+})();
+</script></html>
