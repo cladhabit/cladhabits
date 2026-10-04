@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLADHABITS Test Payment</title>
+
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Arial, sans-serif;
+      background: #f5f7ff;
+    }
+
+    .box {
+      width: min(420px, 90%);
+      padding: 35px;
+      background: white;
+      border-radius: 20px;
+      text-align: center;
+      box-shadow: 0 15px 50px rgba(0,0,0,.12);
+    }
+
+    button {
+      width: 100%;
+      padding: 16px;
+      border: 0;
+      border-radius: 12px;
+      background: #4f46e5;
+      color: white;
+      font-size: 17px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    #status {
+      margin-top: 20px;
+      font-size: 14px;
+      word-break: break-word;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="box">
+  <h1>CLADHABITS</h1>
+  <p>Razorpay Test Payment</p>
+  <p><strong>₹199 TEST</strong></p>
+
+  <button onclick="startPayment()">
+    Pay ₹199 Test
+  </button>
+
+  <div id="status"></div>
+</div>
+
+<script>
+async function startPayment() {
+
+  const status = document.getElementById("status");
+
+  status.textContent = "Creating test order...";
+
+  try {
+
+    const response = await fetch("/api/create-order", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      }
+    });
+
+    const order = await response.json();
+
+    if (!response.ok || !order.order_id) {
+      throw new Error(order.error || "Order creation failed");
+    }
+
+    status.textContent = "Opening Razorpay...";
+
+    const options = {
+
+      key: order.key_id,
+
+      amount: order.amount,
+
+      currency: order.currency,
+
+      name: "CLADHABITS",
+
+      description: "CLADHABITS Habit Tracker - TEST",
+
+      order_id: order.order_id,
+
+      prefill: {
+        email: "cladhabit@gmail.com"
+      },
+
+      theme: {
+        color: "#4f46e5"
+      },
+
+      handler: async function (payment) {
+
+        status.textContent = "Payment successful. Verifying...";
+
+        const verifyResponse = await fetch(
+          "/api/verify-payment",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              order_id: payment.razorpay_order_id,
+              payment_id: payment.razorpay_payment_id,
+              signature: payment.razorpay_signature
+            })
+          }
+        );
+
+        const result = await verifyResponse.json();
+
+        if (result.verified) {
+
+          status.innerHTML =
+            "✅ PAYMENT VERIFIED<br><br>" +
+            "Payment ID:<br>" +
+            payment.razorpay_payment_id;
+
+        } else {
+
+          status.textContent =
+            "❌ Verification failed: " +
+            (result.error || "Unknown error");
+        }
+      },
+
+      modal: {
+        ondismiss: function () {
+          status.textContent = "Payment window closed.";
+        }
+      }
+    };
+
+    const razorpay = new Razorpay(options);
+
+    razorpay.on("payment.failed", function (response) {
+
+      status.innerHTML =
+        "❌ TEST PAYMENT FAILED<br><br>" +
+        (response.error.description || "Payment failed");
+
+    });
+
+    razorpay.open();
+
+  } catch (error) {
+
+    status.textContent =
+      "❌ ERROR: " + error.message;
+
+  }
+}
+</script>
+
+</body>
+</html>
