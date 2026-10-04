@@ -11,7 +11,9 @@ function readRawBody(req) {
     const chunks = [];
 
     req.on("data", (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      chunks.push(
+        Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      );
     });
 
     req.on("end", () => {
@@ -29,6 +31,88 @@ function sha256(value) {
     .digest("hex");
 }
 
+function safeEqual(a, b) {
+  if (!a || !b || a.length !== b.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(
+    Buffer.from(a),
+    Buffer.from(b)
+  );
+}
+
+async function sendAccessEmail(to, accessUrl, paymentId) {
+  const apiKey = process.env.RESEND_API_KEY;
+
+  if (!apiKey) {
+    console.log("RESEND_API_KEY not configured.");
+    return false;
+  }
+
+  const from =
+    process.env.RESEND_FROM_EMAIL ||
+    "onboarding@resend.dev";
+
+  const response = await fetch(
+    "https://api.resend.com/emails",
+    {
+      method: "POST",
+
+      headers: {
+        Authorization: "Bearer " + apiKey,
+        "Content-Type": "application/json"
+      },
+
+      body: JSON.stringify({
+        from,
+
+        to: [to],
+
+        subject:
+          "Your CLADHABITS Habit Tracker is ready!",
+
+        html:
+          '<div style="font-family:Arial,sans-serif;max-width:620px;margin:auto;padding:32px;color:#101828">' +
+
+          "<h1>Your CLADHABITS Habit Tracker is ready 🎉</h1>" +
+
+          "<p>Your payment was successful and your product access has been created.</p>" +
+
+          '<p><a href="' +
+          accessUrl +
+          '" style="display:inline-block;padding:14px 20px;border-radius:10px;background:#2447d8;color:#fff;text-decoration:none;font-weight:700">Open My Habit Tracker</a></p>' +
+
+          '<p style="color:#667085;font-size:13px">Payment ID: ' +
+          paymentId +
+          "</p>" +
+
+          '<p style="color:#667085;font-size:12px">CLADHABITS</p>' +
+
+          "</div>"
+      })
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    console.error(
+      "Resend email failed:",
+      data
+    );
+
+    return false;
+  }
+
+  console.log(
+    "Access email sent:",
+    data?.id
+  );
+
+  return true;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({
@@ -38,49 +122,70 @@ export default async function handler(req, res) {
   }
 
   try {
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const webhookSecrets = [
+      process.env.RAZORPAY_WEBHOOK_SECRET,
+      process.env.RAZORPAY_TEST_WEBHOOK_SECRET
+    ].filter(Boolean);
 
-    if (!webhookSecret || !supabaseUrl || !supabaseKey) {
+    const supabaseUrl =
+      process.env.SUPABASE_URL;
+
+    const supabaseKey =
+      process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    const signature =
+      req.headers["x-razorpay-signature"];
+
+    if (
+      !webhookSecrets.length ||
+      !supabaseUrl ||
+      !supabaseKey
+    ) {
       return res.status(500).json({
         ok: false,
-        error: "Required environment variables are not configured"
+        error:
+          "Required environment variables are not configured"
       });
     }
-
-    const signature = req.headers["x-razorpay-signature"];
 
     if (!signature) {
       return res.status(400).json({
         ok: false,
-        error: "Missing Razorpay webhook signature"
+        error:
+          "Missing Razorpay webhook signature"
       });
     }
 
-    const rawBody = await readRawBody(req);
-
-    const expectedSignature = crypto
-      .createHmac("sha256", webhookSecret)
-      .update(rawBody)
-      .digest("hex");
+    const rawBody =
+      await readRawBody(req);
 
     const valid =
-      expectedSignature.length === signature.length &&
-      crypto.timingSafeEqual(
-        Buffer.from(expectedSignature),
-        Buffer.from(signature)
-      );
+      webhookSecrets.some((secret) => {
+        const expected =
+          crypto
+            .createHmac("sha256", secret)
+            .update(rawBody)
+            .digest("hex");
+
+        return safeEqual(
+          expected,
+          signature
+        );
+      });
 
     if (!valid) {
       return res.status(400).json({
         ok: false,
-        error: "Invalid webhook signature"
+        error:
+          "Invalid webhook signature"
       });
     }
 
-    const event = JSON.parse(rawBody);
-    const eventName = event?.event || "";
+    const event =
+      JSON.parse(rawBody);
+
+    const eventName =
+      event?.event || "";
 
     if (
       eventName !== "payment_link.paid" &&
@@ -95,12 +200,10 @@ export default async function handler(req, res) {
     }
 
     const payment =
-      event?.payload?.payment?.entity ||
-      {};
+      event?.payload?.payment?.entity || {};
 
     const paymentLink =
-      event?.payload?.payment_link?.entity ||
-      {};
+      event?.payload?.payment_link?.entity || {};
 
     const paymentId =
       payment?.id ||
@@ -118,92 +221,194 @@ export default async function handler(req, res) {
       null;
 
     if (!paymentId || !email) {
-      console.error("Missing payment/customer information", {
-        event: eventName,
-        paymentId,
-        email
-      });
-
       return res.status(400).json({
         ok: false,
-        error: "Payment ID or customer email missing"
+        error:
+          "Payment ID or customer email missing"
+      });
+    }
+
+    const customerEmail =
+      email.toLowerCase().trim();
+
+    /*
+      Check whether this payment was
+      already processed.
+    */
+
+    const existingResponse =
+      await fetch(
+        supabaseUrl +
+          "/rest/v1/product_access?razorpay_payment_id=eq." +
+          encodeURIComponent(paymentId) +
+          "&select=id&limit=1",
+        {
+          headers: {
+            apikey: supabaseKey,
+            Authorization:
+              "Bearer " + supabaseKey
+          }
+        }
+      );
+
+    if (!existingResponse.ok) {
+      console.error(
+        "Existing access lookup failed:",
+        await existingResponse.text()
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Unable to check existing product access"
+      });
+    }
+
+    const existingRows =
+      await existingResponse.json();
+
+    if (
+      existingRows &&
+      existingRows.length
+    ) {
+      return res.status(200).json({
+        ok: true,
+        received: true,
+        duplicate: true,
+        payment_id: paymentId
       });
     }
 
     /*
-      Generate a random access token.
-
-      Only the SHA-256 hash is stored in Supabase.
-      The actual token is never stored in the database.
+      Generate secure access token.
     */
-    const accessToken = crypto.randomBytes(32).toString("hex");
-    const accessTokenHash = sha256(accessToken);
 
-    const supabaseResponse = await fetch(
-      `${supabaseUrl}/rest/v1/product_access`,
-      {
-        method: "POST",
-        headers: {
-          "apikey": supabaseKey,
-          "Authorization": `Bearer ${supabaseKey}`,
-          "Content-Type": "application/json",
-          "Prefer": "return=minimal"
-        },
-        body: JSON.stringify({
-          customer_email: email.toLowerCase().trim(),
-          product_slug: "cladhabits-habit-tracker",
-          razorpay_payment_id: paymentId,
-          razorpay_order_id: orderId,
-          access_token_hash: accessTokenHash,
-          status: "active"
-        })
-      }
-    );
+    const accessToken =
+      crypto.randomBytes(32).toString("hex");
 
-    if (!supabaseResponse.ok) {
-      const errorText = await supabaseResponse.text();
-
-      console.error("Supabase insert failed:", errorText);
-
-      /*
-        If the same payment webhook arrives twice,
-        don't treat the duplicate as a new purchase.
-      */
-      if (!errorText.includes("duplicate")) {
-        return res.status(500).json({
-          ok: false,
-          error: "Unable to create product access record"
-        });
-      }
-    }
-
-    console.log("CLADHABITS PAYMENT VERIFIED", {
-      event: eventName,
-      paymentId,
-      email
-    });
+    const accessTokenHash =
+      sha256(accessToken);
 
     /*
-      NEXT DELIVERY STEP:
-      Send the customer their secure product-access link
-      using the accessToken generated above.
-
-      The tracker itself must NOT be made public.
+      Access remains active for 30 days.
     */
+
+    const expiresAt =
+      new Date(
+        Date.now() +
+          30 * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+    /*
+      Create customer entitlement.
+    */
+
+    const insertResponse =
+      await fetch(
+        supabaseUrl +
+          "/rest/v1/product_access",
+        {
+          method: "POST",
+
+          headers: {
+            apikey: supabaseKey,
+            Authorization:
+              "Bearer " + supabaseKey,
+            "Content-Type":
+              "application/json",
+            Prefer: "return=minimal"
+          },
+
+          body: JSON.stringify({
+            customer_email:
+              customerEmail,
+
+            product_slug:
+              "cladhabits-habit-tracker",
+
+            razorpay_payment_id:
+              paymentId,
+
+            razorpay_order_id:
+              orderId,
+
+            access_token_hash:
+              accessTokenHash,
+
+            status:
+              "active",
+
+            expires_at:
+              expiresAt
+          })
+        }
+      );
+
+    if (!insertResponse.ok) {
+      console.error(
+        "Supabase insert failed:",
+        await insertResponse.text()
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "Unable to create product access record"
+      });
+    }
+
+    /*
+      Secure access endpoint.
+    */
+
+    const accessBaseUrl =
+      process.env.PRODUCT_ACCESS_BASE_URL ||
+      "https://cladhabits.vercel.app/api/access";
+
+    const accessUrl =
+      accessBaseUrl +
+      "?token=" +
+      encodeURIComponent(accessToken);
+
+    /*
+      Send customer their access link.
+    */
+
+    const emailSent =
+      await sendAccessEmail(
+        customerEmail,
+        accessUrl,
+        paymentId
+      );
+
+    console.log(
+      "CLADHABITS DELIVERY CREATED",
+      {
+        event: eventName,
+        paymentId,
+        email: customerEmail,
+        emailSent
+      }
+    );
 
     return res.status(200).json({
       ok: true,
       received: true,
       event: eventName,
-      payment_id: paymentId
+      payment_id: paymentId,
+      email_sent: emailSent
     });
 
   } catch (error) {
-    console.error("Webhook processing error:", error);
+    console.error(
+      "Webhook processing error:",
+      error
+    );
 
     return res.status(500).json({
       ok: false,
-      error: "Webhook processing failed"
+      error:
+        "Webhook processing failed"
     });
   }
 }
